@@ -11,12 +11,16 @@ var fmtErr = color.New(color.FgRed).Add(color.Bold)
 var fmtSucc = color.New(color.FgGreen).Add(color.Bold)
 var fmtInfo = color.New(color.FgYellow)
 
+// ChoreState is telling the chore result.
 type ChoreState int
 
 const (
-	STATE_SUCCESS ChoreState = iota
-	STATE_WARNING
-	STATE_ERROR
+	// StateSuccess constant
+	StateSuccess ChoreState = iota
+	// StateWarning constant
+	StateWarning
+	// StateError constant
+	StateError
 )
 
 const (
@@ -50,15 +54,14 @@ func Execute(choreList []Chore) error {
 			continue
 		}
 		state := chore.Execute()
-		if state == STATE_SUCCESS {
+		if state == StateSuccess {
 			fmtSucc.Printf("✓ (success)\n")
-		} else if state == STATE_ERROR {
+		} else if state == StateError {
 			fmtErr.Printf("⚠ (error)\n")
 			fmt.Println("[Output]")
 			//fmt.Println(ctx.LastOutput().String())
 			//fmt.Println(ctx.LastError().String())
 		}
 	}
-	fmtInfo.Println("Chores done.")
 	return nil
 }

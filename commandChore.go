@@ -4,6 +4,7 @@ import (
 	"github.com/jojomi/go-script"
 )
 
+// CommandChore is a chore based on a cli command to be executed.
 type CommandChore struct {
 	BasicChore
 
@@ -11,15 +12,15 @@ type CommandChore struct {
 	WorkingDir  string
 	Frequency   string
 	Output      int
-	SuccessFunc func(*script.Context) bool
+	SuccessFunc func(*script.ProcessResult) bool
 	ctx         *script.Context
 }
 
-var successOnReturnZero = func(c *script.Context) bool {
-	return c.LastExitCode() == 0
+var successOnReturnZero = func(result *script.ProcessResult) bool {
+	return result.Successful()
 }
 
-// New returns a new command based chore.
+// NewCommandChore returns a new command based chore.
 func NewCommandChore() (chore *CommandChore) {
 	// initialize Chore
 	chore = &CommandChore{
@@ -35,20 +36,22 @@ func (c *CommandChore) Execute() (choreState ChoreState) {
 	sc := script.NewContext()
 	sc.SetWorkingDir(c.WorkingDir)
 	// get execution function
-	stdoutSilent := c.Output&OUTPUT_OUT == 0
-	stderrSilent := c.Output&OUTPUT_ERR == 0
-	err := sc.Execute(stdoutSilent, stderrSilent, c.Command[0], c.Command[1:]...)
+	processResult, err := sc.Execute(script.CommandConfig{
+		OutputStdout: c.Output&OUTPUT_OUT == 1,
+		OutputStderr: c.Output&OUTPUT_ERR == 1,
+		ConnectStdin: true,
+	}, c.Command[0], c.Command[1:]...)
 	c.ctx = sc
 	if err != nil {
-		return STATE_ERROR
+		return StateError
 	}
-	if c.SuccessFunc(sc) {
-		return STATE_SUCCESS
-	} else {
-		return STATE_ERROR
+	if c.SuccessFunc(processResult) {
+		return StateSuccess
 	}
+	return StateError
 }
 
+// Context returns the CommandChore's script.Context
 func (c *CommandChore) Context() *script.Context {
 	return c.ctx
 }
