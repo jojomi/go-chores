@@ -4,10 +4,12 @@ package script
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -15,10 +17,19 @@ import (
 // ProcessResult contains the results of a process execution be it successful or not.
 type ProcessResult struct {
 	Cmd          *exec.Cmd
+	Process      *os.Process
 	ProcessState *os.ProcessState
 	ProcessError error
 	stdoutBuffer *bytes.Buffer
 	stderrBuffer *bytes.Buffer
+}
+
+// CommandConfig defines details of command execution.
+type CommandConfig struct {
+	OutputStdout bool
+	OutputStderr bool
+	ConnectStdin bool
+	Detach       bool
 }
 
 // NewProcessResult creates a new empty ProcessResult
@@ -44,26 +55,44 @@ func (pr *ProcessResult) Error() string {
 // Successful returns true iff the process denoted by this struct was run
 // successfully. Success is defined as the exit code being set to 0.
 func (pr *ProcessResult) Successful() bool {
-	fmt.Println(pr.ExitCode())
-	return pr.ExitCode() == 0
+	code, err := pr.ExitCode()
+	if err != nil {
+		return false
+	}
+	return code == 0
 }
 
 // StateString returns a string representation of the process denoted by
 // this struct
 func (pr *ProcessResult) StateString() string {
 	state := pr.ProcessState
-	return fmt.Sprintf("PID: %q, Exited: %t, Exit Code: %q, Success: %t, User Time: %q", state.Pid(), state.Exited(), pr.ExitCode(), state.Success(), state.UserTime())
+	exitCode, err := pr.ExitCode()
+	exitCodeString := "?"
+	if err == nil {
+		exitCodeString = strconv.Itoa(exitCode)
+	}
+	return fmt.Sprintf("PID: %d, Exited: %t, Exit Code: %s, Success: %t, User Time: %s", state.Pid(), state.Exited(), exitCodeString, state.Success(), state.UserTime())
 }
 
 // ExitCode returns the exit code of the command denoted by this struct
-func (pr *ProcessResult) ExitCode() int {
-	var waitStatus syscall.WaitStatus
-	if exitError, ok := pr.ProcessError.(*exec.ExitError); ok {
+func (pr *ProcessResult) ExitCode() (int, error) {
+	var (
+		waitStatus syscall.WaitStatus
+		exitError  *exec.ExitError
+	)
+	ok := false
+	if pr.ProcessError != nil {
+		exitError, ok = pr.ProcessError.(*exec.ExitError)
+	}
+	if ok {
 		waitStatus = exitError.Sys().(syscall.WaitStatus)
 	} else {
+		if pr.ProcessState == nil {
+			return -1, errors.New("no exit code available")
+		}
 		waitStatus = pr.ProcessState.Sys().(syscall.WaitStatus)
 	}
-	return waitStatus.ExitStatus()
+	return waitStatus.ExitStatus(), nil
 }
 
 // CommandPath finds the full path of a binary given its name. This requires the wich command to be present in the system.
@@ -90,27 +119,43 @@ func (c *Context) MustCommandExist(name string) {
 
 // ExecuteDebug executes a system command, stdout and stderr are piped
 func (c *Context) ExecuteDebug(name string, args ...string) (pr *ProcessResult, err error) {
-	pr, err = c.Execute(false, false, name, args...)
+	pr, err = c.Execute(CommandConfig{
+		OutputStdout: true,
+		OutputStderr: true,
+		ConnectStdin: true,
+	}, name, args...)
 	return
 }
 
 // ExecuteSilent executes a  system command without outputting stdout (it is
 // still captured and can be retrieved using the returned ProcessResult)
 func (c *Context) ExecuteSilent(name string, args ...string) (pr *ProcessResult, err error) {
-	pr, err = c.Execute(true, false, name, args...)
+	pr, err = c.Execute(CommandConfig{
+		OutputStdout: false,
+		OutputStderr: true,
+		ConnectStdin: true,
+	}, name, args...)
 	return
 }
 
 // ExecuteFullySilent executes a system command without outputting stdout or
 // stderr (both are still captured and can be retrieved using the returned ProcessResult)
 func (c *Context) ExecuteFullySilent(name string, args ...string) (pr *ProcessResult, err error) {
-	pr, err = c.Execute(true, true, name, args...)
+	pr, err = c.Execute(CommandConfig{
+		OutputStdout: false,
+		OutputStderr: false,
+		ConnectStdin: true,
+	}, name, args...)
 	return
 }
 
 // MustExecuteDebug ensures a system command to be executed, otherwise panics
 func (c *Context) MustExecuteDebug(name string, args ...string) (pr *ProcessResult) {
-	pr, err := c.Execute(false, false, name, args...)
+	pr, err := c.Execute(CommandConfig{
+		OutputStdout: true,
+		OutputStderr: true,
+		ConnectStdin: true,
+	}, name, args...)
 	if err != nil {
 		panic(err)
 	}
@@ -120,7 +165,11 @@ func (c *Context) MustExecuteDebug(name string, args ...string) (pr *ProcessResu
 // MustExecuteSilent ensures a system command to be executed without outputting
 // stdout, otherwise panics
 func (c *Context) MustExecuteSilent(name string, args ...string) (pr *ProcessResult) {
-	pr, err := c.ExecuteSilent(name, args...)
+	pr, err := c.Execute(CommandConfig{
+		OutputStdout: false,
+		OutputStderr: true,
+		ConnectStdin: true,
+	}, name, args...)
 	if err != nil {
 		panic(err)
 	}
@@ -130,56 +179,104 @@ func (c *Context) MustExecuteSilent(name string, args ...string) (pr *ProcessRes
 // MustExecuteFullySilent ensures a system command to be executed without
 // outputting stdout and stderr, otherwise panics
 func (c *Context) MustExecuteFullySilent(name string, args ...string) (pr *ProcessResult) {
-	pr, err := c.ExecuteFullySilent(name, args...)
+	pr, err := c.Execute(CommandConfig{
+		OutputStdout: false,
+		OutputStderr: false,
+		ConnectStdin: true,
+	}, name, args...)
 	if err != nil {
 		panic(err)
 	}
 	return
 }
 
-// Execute executes a system command with configurable stdout and stderr output
-func (c *Context) Execute(stdoutSilent bool, stderrSilent bool, name string, args ...string) (pr *ProcessResult, err error) {
-	cmd, pr := c.prepareCommand(stdoutSilent, stderrSilent, name, args...)
+// Execute executes a system command according to given CommandConfig.
+func (c *Context) Execute(cc CommandConfig, name string, args ...string) (pr *ProcessResult, err error) {
+	cmd, pr := c.prepareCommand(cc, name, args...)
+
+	if cc.Detach {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
+	}
 
 	err = cmd.Start()
 	if err != nil {
 		return
 	}
-	err = cmd.Wait()
-	pr.ProcessError = err
+	pr.Process = cmd.Process
 
-	return
-}
-
-// ExecuteDetached executes the given command in this context in the background (detached). This means the script execution instantly continues.
-func (c *Context) ExecuteDetached(name string, args ...string) (cmd *exec.Cmd, pr *ProcessResult, err error) {
-	cmd, pr = c.prepareCommand(true, true, name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
+	if !cc.Detach {
+		c.WaitCmd(pr)
 	}
-	err = cmd.Start()
+
 	return
 }
 
-func (c Context) prepareCommand(stdoutSilent bool, stderrSilent bool, name string, args ...string) (*exec.Cmd, *ProcessResult) {
+// ExecuteDetachedDebug executes a system command, stdout and stderr are piped.
+// The command is executed in the background (detached).
+func (c *Context) ExecuteDetachedDebug(name string, args ...string) (pr *ProcessResult, err error) {
+	pr, err = c.Execute(CommandConfig{
+		OutputStdout: true,
+		OutputStderr: true,
+		Detach:       true,
+	}, name, args...)
+	return
+}
+
+// ExecuteDetachedSilent executes a  system command without outputting stdout (it is
+// still captured and can be retrieved using the returned ProcessResult).
+// The command is executed in the background (detached).
+func (c *Context) ExecuteDetachedSilent(name string, args ...string) (pr *ProcessResult, err error) {
+	pr, err = c.Execute(CommandConfig{
+		OutputStdout: false,
+		OutputStderr: true,
+		Detach:       true,
+	}, name, args...)
+	return
+}
+
+// ExecuteDetachedFullySilent executes a system command without outputting stdout or
+// stderr (both are still captured and can be retrieved using the returned ProcessResult).
+// The command is executed in the background (detached).
+func (c *Context) ExecuteDetachedFullySilent(name string, args ...string) (pr *ProcessResult, err error) {
+	pr, err = c.Execute(CommandConfig{
+		OutputStdout: false,
+		OutputStderr: false,
+		Detach:       true,
+	}, name, args...)
+	return
+}
+
+func (c Context) prepareCommand(cc CommandConfig, name string, args ...string) (*exec.Cmd, *ProcessResult) {
 	pr := NewProcessResult()
 
 	cmd := exec.Command(name, args...)
 	pr.Cmd = cmd
-	pr.ProcessState = cmd.ProcessState
 
 	cmd.Dir = c.workingDir
 	cmd.Env = c.getFullEnv()
 
-	if stderrSilent {
-		cmd.Stderr = pr.stderrBuffer
-	} else {
-		cmd.Stderr = io.MultiWriter(c.stderr, pr.stderrBuffer)
-	}
-	if stderrSilent {
+	if !cc.OutputStdout {
 		cmd.Stdout = pr.stdoutBuffer
 	} else {
 		cmd.Stdout = io.MultiWriter(c.stdout, pr.stdoutBuffer)
 	}
+	if !cc.OutputStderr {
+		cmd.Stderr = pr.stderrBuffer
+	} else {
+		cmd.Stderr = io.MultiWriter(c.stderr, pr.stderrBuffer)
+	}
+
+	if cc.ConnectStdin {
+		cmd.Stdin = c.stdin
+	}
 	return cmd, pr
+}
+
+// WaitCmd waits for a command to be finished (useful on detached processes).
+func (c Context) WaitCmd(pr *ProcessResult) {
+	err := pr.Cmd.Wait()
+	pr.ProcessState = pr.Cmd.ProcessState
+	pr.ProcessError = err
 }

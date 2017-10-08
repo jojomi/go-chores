@@ -11,7 +11,7 @@
   branch = "master"
   name = "github.com/jojomi/go-script"
   packages = ["."]
-  revision = "a16e95edf27357754c8f76f2abcf01ea64b5bdfb"
+  revision = "777047fda1f3c176ff846f92f6ec1c8cff6fe7df"
 
 [[projects]]
   name = "github.com/mattn/go-colorable"
@@ -29,7 +29,7 @@
   branch = "master"
   name = "github.com/spf13/afero"
   packages = [".","mem"]
-  revision = "3de492c3cda9570c77bc1f495857bfbf4b760efd"
+  revision = "e67d870304c4bca21331b02f414f970df13aa694"
 
 [[projects]]
   branch = "master"
