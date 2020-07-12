@@ -1,7 +1,7 @@
 package chores
 
 import (
-	"github.com/jojomi/go-script"
+	"github.com/jojomi/go-script/v2"
 )
 
 // CommandChore is a chore based on a cli command to be executed.
@@ -35,12 +35,14 @@ func (c *CommandChore) Execute() (choreState ChoreState) {
 	// TODO check frequency requirement
 	sc := script.NewContext()
 	sc.SetWorkingDir(c.WorkingDir)
+	lc := script.NewLocalCommand()
+	lc.AddAll(c.Command...)
 	// get execution function
 	processResult, err := sc.Execute(script.CommandConfig{
 		OutputStdout: c.Output&OUTPUT_OUT == 1,
 		OutputStderr: c.Output&OUTPUT_ERR == 1,
 		ConnectStdin: true,
-	}, c.Command[0], c.Command[1:]...)
+	}, lc)
 	c.ctx = sc
 	if err != nil {
 		return StateError
